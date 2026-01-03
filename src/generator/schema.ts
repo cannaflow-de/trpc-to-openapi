@@ -147,11 +147,11 @@ export const getRequestBodyObject = (
   }
 
   const content: ZodOpenApiContentObject = {};
-  const schemaExamples = dedupedSchema.meta()?.examples;
+  const schemaExamples = dedupedSchema.meta()?.examples as Record<string, unknown> | undefined;
   for (const contentType of contentTypes) {
     content[contentType] = {
       schema: dedupedSchema,
-      ...(schemaExamples ? { examples: schemaExamples } : {}),
+      ...(schemaExamples ? { examples: schemaExamples as any } : {}),
     };
   }
   return {
