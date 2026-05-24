@@ -13,7 +13,7 @@ import {
   TRPC_ERROR_CODE_HTTP_STATUS,
   TRPC_ERROR_CODE_MESSAGE,
 } from '../adapters';
-import { OpenApiContentType } from '../types';
+import { OpenApiContentType, OpenApiErrorResponseConfig } from '../types';
 import {
   instanceofZodType,
   instanceofZodTypeCoercible,
@@ -163,17 +163,21 @@ export const getRequestBodyObject = (
 export const hasInputs = (schema: unknown) =>
   instanceofZodType(schema) && !instanceofZodTypeLikeVoid(unwrapZodType(schema, true));
 
-const errorResponseObjectByCode: Record<string, ZodOpenApiResponseObject> = {};
+const errorResponseObjectByCodeAndMessage: Record<string, ZodOpenApiResponseObject> = {};
+const errorResponseContentByCode: Record<
+  string,
+  NonNullable<ZodOpenApiResponseObject['content']>
+> = {};
 
 export const errorResponseObject = (
   code: TRPCError['code'] = 'INTERNAL_SERVER_ERROR',
   message?: string,
   issues?: { message: string }[],
 ): ZodOpenApiResponseObject => {
-  if (!errorResponseObjectByCode[code]) {
-    errorResponseObjectByCode[code] = {
-      description: message ?? 'An error response',
-      content: {
+  const cacheKey = JSON.stringify([code, message]);
+  if (!errorResponseObjectByCodeAndMessage[cacheKey]) {
+    if (!errorResponseContentByCode[code]) {
+      errorResponseContentByCode[code] = {
         'application/json': {
           schema: z
             .object({
@@ -206,10 +210,15 @@ export const errorResponseObject = (
               id: `error.${code}`,
             }),
         },
-      },
+      };
+    }
+
+    errorResponseObjectByCodeAndMessage[cacheKey] = {
+      description: message ?? 'An error response',
+      content: errorResponseContentByCode[code],
     };
   }
-  return errorResponseObjectByCode[code];
+  return errorResponseObjectByCodeAndMessage[cacheKey];
 };
 
 export const errorResponseFromStatusCode = (status: number) => {
@@ -221,6 +230,23 @@ export const errorResponseFromStatusCode = (status: number) => {
 export const errorResponseFromMessage = (status: number, message: string) =>
   errorResponseObject(HTTP_STATUS_TRPC_ERROR_CODE[status], message);
 
+export const errorResponseFromConfig = (
+  status: number,
+  config: OpenApiErrorResponseConfig,
+): ZodOpenApiResponseObject => {
+  if (config.schema) {
+    return {
+      description: config.description,
+      content: {
+        'application/json': {
+          schema: config.schema,
+        },
+      },
+    };
+  }
+  return errorResponseFromMessage(status, config.description);
+};
+
 export const getResponsesObject = (
   schema: ZodObject,
   httpMethod: HttpMethods,
@@ -228,7 +254,7 @@ export const getResponsesObject = (
   isProtected: boolean,
   hasInputs: boolean,
   successDescription?: string,
-  errorResponses?: number[] | Record<number, string>,
+  errorResponses?: number[] | Record<number, string | OpenApiErrorResponseConfig>,
 ): ZodOpenApiResponsesObject => ({
   200: {
     description: successDescription ?? 'Successful response',
@@ -249,7 +275,9 @@ export const getResponsesObject = (
           ? errorResponses.map((x) => [x, errorResponseFromStatusCode(x)])
           : Object.entries(errorResponses).map(([k, v]) => [
               k,
-              errorResponseFromMessage(Number(k), v),
+              typeof v === 'string'
+                ? errorResponseFromMessage(Number(k), v)
+                : errorResponseFromConfig(Number(k), v),
             ]),
       )
     : {
