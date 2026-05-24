@@ -3517,4 +3517,74 @@ describe('generator', () => {
 
     expect(openApiDocument.paths!['/metadata/all']!.get!.operationId).toBe('getAllMetadataAboutMe');
   });
+
+  test('with errorResponses as object config with schema', () => {
+    const appRouter = t.router({
+      markDelivered: t.procedure
+        .meta({
+          openapi: {
+            method: 'POST',
+            path: '/orders/{id}/deliver',
+            errorResponses: {
+              404: 'Order not found',
+              409: {
+                description: 'Order is not in a valid state',
+                schema: z.object({
+                  code: z.enum(['OperationNotPermitted', 'DisallowedOrderState']),
+                  message: z.string(),
+                  orderId: z.string(),
+                }),
+              },
+            },
+          },
+        })
+        .input(z.object({ id: z.string() }))
+        .output(z.void())
+        .mutation(() => {}),
+    });
+
+    const openApiDocument = generateOpenApiDocument(appRouter, defaultDocOpts);
+
+    const responses = openApiDocument.paths!['/orders/{id}/deliver']!.post!.responses!;
+
+    // String config: uses default error shape with description
+    expect(responses['404']).toBeDefined();
+    expect((responses['404'] as any).description).toBe('Order not found');
+
+    // Object config with schema: uses custom schema
+    expect(responses['409']).toBeDefined();
+    expect((responses['409'] as any).description).toBe('Order is not in a valid state');
+    const conflictSchema = (responses['409'] as any).content['application/json'].schema;
+    // Custom schema should not have the default 'issues' field
+    expect(conflictSchema).toBeDefined();
+    // Verify it's a different shape than the default error response
+    expect((responses['404'] as any).content['application/json'].schema).not.toEqual(conflictSchema);
+  });
+
+  test('with errorResponses as object config without schema', () => {
+    const appRouter = t.router({
+      getUser: t.procedure
+        .meta({
+          openapi: {
+            method: 'GET',
+            path: '/users/{id}',
+            errorResponses: {
+              422: { description: 'Unprocessable entity' },
+            },
+          },
+        })
+        .input(z.object({ id: z.string() }))
+        .output(z.object({ name: z.string() }))
+        .query(() => ({ name: 'test' })),
+    });
+
+    const openApiDocument = generateOpenApiDocument(appRouter, defaultDocOpts);
+
+    const responses = openApiDocument.paths!['/users/{id}']!.get!.responses!;
+
+    // Config without schema: falls back to default error shape with custom description
+    expect(responses['422']).toBeDefined();
+    expect((responses['422'] as any).description).toBe('Unprocessable entity');
+    expect((responses['422'] as any).content['application/json']).toBeDefined();
+  });
 });

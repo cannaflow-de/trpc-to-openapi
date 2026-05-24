@@ -7,7 +7,7 @@ import type {
   RouterRecord,
 } from '@trpc/server/unstable-core-do-not-import';
 import { IncomingMessage } from 'http';
-import type { ZodObject } from 'zod';
+import type { ZodObject, ZodType } from 'zod';
 import type { $ZodIssue } from 'zod/v4/core';
 
 export { type OpenAPIObject, type SecuritySchemeObject } from 'openapi3-ts/oas31';
@@ -21,6 +21,12 @@ export type OpenApiContentType =
   | 'application/x-www-form-urlencoded'
   // eslint-disable-next-line @typescript-eslint/ban-types
   | (string & {});
+
+export interface OpenApiErrorResponseConfig {
+  description: string;
+  /** Zod schema for the error response body. Overrides the default error shape. */
+  schema?: ZodType;
+}
 
 export type OpenApiMeta<TMeta = TRPCMeta> = TMeta & {
   openapi?: {
@@ -37,7 +43,7 @@ export type OpenApiMeta<TMeta = TRPCMeta> = TMeta & {
     requestHeaders?: ZodObject;
     responseHeaders?: ZodObject;
     successDescription?: string;
-    errorResponses?: number[] | Record<number, string>;
+    errorResponses?: number[] | Record<number, string | OpenApiErrorResponseConfig>;
   };
 };
 
