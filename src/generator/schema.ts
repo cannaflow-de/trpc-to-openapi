@@ -163,17 +163,21 @@ export const getRequestBodyObject = (
 export const hasInputs = (schema: unknown) =>
   instanceofZodType(schema) && !instanceofZodTypeLikeVoid(unwrapZodType(schema, true));
 
-const errorResponseObjectByCode: Record<string, ZodOpenApiResponseObject> = {};
+const errorResponseObjectByCodeAndMessage: Record<string, ZodOpenApiResponseObject> = {};
+const errorResponseContentByCode: Record<
+  string,
+  NonNullable<ZodOpenApiResponseObject['content']>
+> = {};
 
 export const errorResponseObject = (
   code: TRPCError['code'] = 'INTERNAL_SERVER_ERROR',
   message?: string,
   issues?: { message: string }[],
 ): ZodOpenApiResponseObject => {
-  if (!errorResponseObjectByCode[code]) {
-    errorResponseObjectByCode[code] = {
-      description: message ?? 'An error response',
-      content: {
+  const cacheKey = JSON.stringify([code, message]);
+  if (!errorResponseObjectByCodeAndMessage[cacheKey]) {
+    if (!errorResponseContentByCode[code]) {
+      errorResponseContentByCode[code] = {
         'application/json': {
           schema: z
             .object({
@@ -206,10 +210,15 @@ export const errorResponseObject = (
               id: `error.${code}`,
             }),
         },
-      },
+      };
+    }
+
+    errorResponseObjectByCodeAndMessage[cacheKey] = {
+      description: message ?? 'An error response',
+      content: errorResponseContentByCode[code],
     };
   }
-  return errorResponseObjectByCode[code];
+  return errorResponseObjectByCodeAndMessage[cacheKey];
 };
 
 export const errorResponseFromStatusCode = (status: number) => {
