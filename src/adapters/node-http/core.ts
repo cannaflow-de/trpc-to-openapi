@@ -105,7 +105,13 @@ export const createOpenApiNodeHttpHandler = <
       const contentType = getContentType(req);
       const useBody = acceptsRequestBody(method);
 
-      if (useBody && !contentType?.startsWith('application/json')) {
+      const { inputParser } = getInputOutputParsers(procedure.procedure);
+      const unwrappedSchema = unwrapZodType(inputParser, true);
+
+      // Skip content-type validation for void-input procedures — they have no
+      // body to parse, so requiring application/json is unnecessary and breaks
+      // SDK clients (e.g. ReadMe) that omit Content-Type on bodyless requests.
+      if (useBody && !instanceofZodTypeLikeVoid(unwrappedSchema) && !contentType?.startsWith('application/json')) {
         throw new TRPCError({
           code: 'UNSUPPORTED_MEDIA_TYPE',
           message: contentType
@@ -113,9 +119,6 @@ export const createOpenApiNodeHttpHandler = <
             : 'Missing content-type header',
         });
       }
-
-      const { inputParser } = getInputOutputParsers(procedure.procedure);
-      const unwrappedSchema = unwrapZodType(inputParser, true);
 
       // input should stay undefined if z.void()
       if (!instanceofZodTypeLikeVoid(unwrappedSchema)) {
