@@ -209,6 +209,50 @@ describe('standalone adapter', () => {
     expect(onErrorMock).toHaveBeenCalledTimes(1);
   });
 
+  test('with void input mutation and missing content-type header', async () => {
+    const appRouter = t.router({
+      ping: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/ping' } })
+        .input(z.void())
+        .output(z.literal('pong'))
+        .mutation(() => 'pong' as const),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+    });
+
+    // SDK clients (e.g. ReadMe) omit Content-Type on bodyless POST requests
+    const res = await fetch(`${url}/ping`, { method: 'POST' });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toBe('pong');
+  });
+
+  test('with void input mutation and non-json content-type header', async () => {
+    const appRouter = t.router({
+      ping: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/ping' } })
+        .input(z.void())
+        .output(z.literal('pong'))
+        .mutation(() => 'pong' as const),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+    });
+
+    const res = await fetch(`${url}/ping`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    });
+    const body = await res.json();
+
+    expect(res.status).toBe(200);
+    expect(body).toBe('pong');
+  });
+
   test('with missing input', async () => {
     const appRouter = t.router({
       echo: t.procedure
