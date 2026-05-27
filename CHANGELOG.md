@@ -1,5 +1,9 @@
 ## Changelog
 
+- v3.2.4
+
+  - fix: skip content-type validation for mutations whose input is fully covered by path parameters
+
 - v3.1.0
 
   - feat: Add API to override default generated operationId [#107](https://github.com/mcampa/trpc-to-openapi/pull/107) by [@agrippa1994](https://github.com/agrippa1994)

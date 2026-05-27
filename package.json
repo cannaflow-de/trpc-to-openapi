@@ -1,6 +1,6 @@
 {
   "name": "@cannaflow-de/trpc-to-openapi",
-  "version": "3.2.3",
+  "version": "3.2.4",
   "description": "tRPC OpenAPI - fork with Zod v4 prefault support",
   "author": "mcampa",
   "private": false,
