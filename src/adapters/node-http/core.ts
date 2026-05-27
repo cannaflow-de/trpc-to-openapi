@@ -108,10 +108,17 @@ export const createOpenApiNodeHttpHandler = <
       const { inputParser } = getInputOutputParsers(procedure.procedure);
       const unwrappedSchema = unwrapZodType(inputParser, true);
 
-      // Skip content-type validation for void-input procedures — they have no
-      // body to parse, so requiring application/json is unnecessary and breaks
-      // SDK clients (e.g. ReadMe) that omit Content-Type on bodyless requests.
-      if (useBody && !instanceofZodTypeLikeVoid(unwrappedSchema) && !contentType?.startsWith('application/json')) {
+      // When every input field is supplied via path parameters, the request body
+      // is empty — so requiring a JSON Content-Type is wrong and breaks clients
+      // (e.g. ReadMe) that omit Content-Type on bodyless requests.
+      const allInputFromPath =
+        !!pathInput &&
+        instanceofZodTypeObject(unwrappedSchema) &&
+        Object.keys(unwrappedSchema.shape).every((key) => key in pathInput);
+
+      // Skip content-type validation for void-input procedures and for
+      // procedures whose input is fully covered by path parameters.
+      if (useBody && !instanceofZodTypeLikeVoid(unwrappedSchema) && !allInputFromPath && !contentType?.startsWith('application/json')) {
         throw new TRPCError({
           code: 'UNSUPPORTED_MEDIA_TYPE',
           message: contentType
@@ -122,10 +129,14 @@ export const createOpenApiNodeHttpHandler = <
 
       // input should stay undefined if z.void()
       if (!instanceofZodTypeLikeVoid(unwrappedSchema)) {
-        input = {
-          ...(useBody ? await getBody(req, maxBodySize) : getQuery(req, url)),
-          ...pathInput,
-        };
+        if (allInputFromPath) {
+          input = { ...pathInput };
+        } else {
+          input = {
+            ...(useBody ? await getBody(req, maxBodySize) : getQuery(req, url)),
+            ...pathInput,
+          };
+        }
       }
 
       // if supported, coerce all string values to correct types

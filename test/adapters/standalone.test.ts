@@ -253,6 +253,28 @@ describe('standalone adapter', () => {
     expect(body).toBe('pong');
   });
 
+  test('with path-only input mutation and missing content-type header', async () => {
+    const appRouter = t.router({
+      markDelivered: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/prescriptions/{id}/mark-delivered' } })
+        .input(z.object({ id: z.string() }))
+        .output(z.object({ id: z.string(), status: z.string() }))
+        .mutation(({ input }) => ({ id: input.id, status: 'delivered' })),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+    });
+
+    // All input fields come from path params — body is empty, so Content-Type
+    // should not be required.
+    const res = await fetch(`${url}/prescriptions/rx-123/mark-delivered`, { method: 'POST' });
+    const body = await res.json();
+
+    expect(body).toEqual({ id: 'rx-123', status: 'delivered' });
+    expect(res.status).toBe(200);
+  });
+
   test('with missing input', async () => {
     const appRouter = t.router({
       echo: t.procedure
