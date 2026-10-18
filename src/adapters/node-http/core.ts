@@ -20,7 +20,11 @@ import {
   acceptsRequestBody,
   normalizePath,
   getInputOutputParsers,
-  coerceSchema,
+  coerceInput,
+  convertsBeforeTopLevelPipe,
+  forEachOpenApiProcedure,
+  instanceofZodType,
+  OpenApiCoercion,
   instanceofZodTypeLikeVoid,
   instanceofZodTypeObject,
   instanceofZodTypeOptional,
@@ -40,7 +44,25 @@ export type CreateOpenApiNodeHttpHandlerOptions<
 > = Pick<
   NodeHTTPHandlerOptions<TRouter, TRequest, TResponse>,
   'router' | 'createContext' | 'responseMeta' | 'onError' | 'maxBodySize'
->;
+> &
+  OpenApiCoercionOptions<TRequest>;
+
+export interface OpenApiCoercionOptions<TRequest> {
+  /**
+   * Convert JSON body values to the number, boolean, bigint and date types of the input schema.
+   * Defaults to true. Path and query values are strings, so they are always converted.
+   */
+  coerceBody?: boolean;
+  /**
+   * Called before the procedure runs when the adapter converted at least one input value.
+   * The handler awaits it, so an error it throws or rejects with reaches `onError`.
+   */
+  onCoerce?: (opts: {
+    path: string;
+    coercions: OpenApiCoercion[];
+    req: TRequest;
+  }) => void | Promise<void>;
+}
 
 export type OpenApiNextFunction = () => void;
 
@@ -56,9 +78,19 @@ export const createOpenApiNodeHttpHandler = <
   // Validate router
   if (process.env.NODE_ENV !== 'production') {
     generateOpenApiDocument(router, { title: '', version: '', baseUrl: '' });
+    forEachOpenApiProcedure(router._def.procedures, ({ path, procedure }) => {
+      const { inputParser } = getInputOutputParsers(procedure);
+      if (instanceofZodType(inputParser) && convertsBeforeTopLevelPipe(inputParser)) {
+        console.warn(
+          `trpc-to-openapi: the input of "${path}" starts with a pipe, preprocess or transform. ` +
+            'Sent values are converted before it runs, and keys it renames or fills are not. ' +
+            'Declare the number, boolean, bigint and date fields of its output with z.coerce.',
+        );
+      }
+    });
   }
 
-  const { createContext, responseMeta, onError, maxBodySize } = opts;
+  const { createContext, responseMeta, onError, maxBodySize, coerceBody = true, onCoerce } = opts;
   const getProcedure = createProcedureCache(router);
 
   return async (req: TRequest, res: TResponse, next?: OpenApiNextFunction) => {
@@ -139,6 +171,7 @@ export const createOpenApiNodeHttpHandler = <
         }
       }
 
+      let procedureInput = input;
       // if supported, coerce all string values to correct types
       if (zodSupportsCoerce && instanceofZodTypeObject(unwrappedSchema)) {
         if (!useBody) {
@@ -162,7 +195,15 @@ export const createOpenApiNodeHttpHandler = <
             }
           }
         }
-        coerceSchema(unwrappedSchema);
+        const coerced = coerceInput(inputParser, input, (key) => {
+          if (pathInput && key in pathInput) return 'path';
+          if (!useBody) return 'query';
+          return coerceBody ? 'body' : null;
+        });
+        procedureInput = coerced.input;
+        if (coerced.coercions.length > 0) {
+          await onCoerce?.({ path: procedure.path, coercions: coerced.coercions, req });
+        }
       }
 
       info = {
@@ -184,7 +225,7 @@ export const createOpenApiNodeHttpHandler = <
         caller as any,
       ) as OpenApiProcedure;
 
-      data = await procedureFn(input);
+      data = await procedureFn(procedureInput);
 
       const meta = responseMeta?.({
         type: procedure.type,

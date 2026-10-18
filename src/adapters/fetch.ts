@@ -3,15 +3,16 @@ import { FetchHandlerOptions } from '@trpc/server/adapters/fetch';
 import { IncomingMessage, ServerResponse } from 'http';
 
 import { OpenApiRouter } from '../types';
-import { createOpenApiNodeHttpHandler } from './node-http';
+import { OpenApiCoercionOptions, createOpenApiNodeHttpHandler } from './node-http';
 
 export type CreateOpenApiFetchHandlerOptions<TRouter extends OpenApiRouter> = Omit<
   FetchHandlerOptions<TRouter>,
   'batching'
-> & {
-  req: Request;
-  endpoint: `/${string}`;
-};
+> &
+  OpenApiCoercionOptions<Request> & {
+    req: Request;
+    endpoint: `/${string}`;
+  };
 
 const getUrlEncodedBody = async (req: Request) => {
   const params = new URLSearchParams(await req.text());

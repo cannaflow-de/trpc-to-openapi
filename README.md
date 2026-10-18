@@ -146,6 +146,10 @@ A procedure can accept a set of inputs via URL path parameters. You can add a pa
 
 Query & path parameter inputs are always accepted as a `string`. This library will attempt to [coerce](https://github.com/colinhacks/zod#coercion-for-primitives) your input values to the following primitive types out of the box: `number`, `boolean`, `bigint` and `date`. If you wish to support others such as `object`, `array` etc. please use [`z.preprocess()`](https://github.com/colinhacks/zod#preprocess).
 
+The handler converts the input values before the procedure parses them and does not change your schemas, so tRPC callers of the same procedures and schemas stay strict. JSON body values are converted the same way unless you pass `coerceBody: false`. Use `onCoerce` to see which values were converted.
+
+If an input starts with `z.preprocess()`, a pipe or a transform, the handler converts the sent values before that stage runs. Keys that the stage renames or fills are not converted, so declare those fields with `z.coerce`, for example `z.preprocess(rename, z.object({ pageSize: z.coerce.number() }))`. Outside production the handler warns about such inputs.
+
 ```typescript
 // Router
 export const appRouter = t.router({
@@ -392,13 +396,15 @@ Please see [full typings here](src/types.ts).
 
 Please see [full typings here](src/adapters/node-http/core.ts).
 
-| Property        | Type       | Description                                            | Required |
-| --------------- | ---------- | ------------------------------------------------------ | -------- |
-| `router`        | `Router`   | Your application tRPC router.                          | `true`   |
-| `createContext` | `Function` | Passes contextual (`ctx`) data to procedure resolvers. | `false`  |
-| `responseMeta`  | `Function` | Returns any modifications to statusCode & headers.     | `false`  |
-| `onError`       | `Function` | Called if error occurs inside handler.                 | `false`  |
-| `maxBodySize`   | `number`   | Maximum request body size in bytes (default: 100kb).   | `false`  |
+| Property        | Type       | Description                                                    | Required |
+| --------------- | ---------- | -------------------------------------------------------------- | -------- |
+| `router`        | `Router`   | Your application tRPC router.                                  | `true`   |
+| `createContext` | `Function` | Passes contextual (`ctx`) data to procedure resolvers.         | `false`  |
+| `responseMeta`  | `Function` | Returns any modifications to statusCode & headers.             | `false`  |
+| `onError`       | `Function` | Called if error occurs inside handler.                         | `false`  |
+| `maxBodySize`   | `number`   | Maximum request body size in bytes (default: 100kb).           | `false`  |
+| `coerceBody`    | `boolean`  | Converts JSON body values like query values (default: `true`). | `false`  |
+| `onCoerce`      | `Function` | Called with the converted values before the procedure runs.    | `false`  |
 
 ---
 
