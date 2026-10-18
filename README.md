@@ -148,6 +148,8 @@ Query & path parameter inputs are always accepted as a `string`. This library wi
 
 The handler converts the input values before the procedure parses them and does not change your schemas, so tRPC callers of the same procedures and schemas stay strict. JSON body values are converted the same way unless you pass `coerceBody: false`. Use `onCoerce` to see which values were converted.
 
+If an input starts with `z.preprocess()`, a pipe or a transform, the handler converts the sent values before that stage runs. Keys that the stage renames or fills are not converted, so declare those fields with `z.coerce`, for example `z.preprocess(rename, z.object({ pageSize: z.coerce.number() }))`. Outside production the handler warns about such inputs.
+
 ```typescript
 // Router
 export const appRouter = t.router({

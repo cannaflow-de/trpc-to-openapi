@@ -16,14 +16,21 @@ const legacyCoerceSchema = (schema: z.ZodObject<z.ZodRawShape>) => {
   });
 };
 
-const leaves: Record<string, { make: () => z.ZodType; fallback: unknown }> = {
+const leaves = {
   number: { make: () => z.number(), fallback: 7 },
   int: { make: () => z.int(), fallback: 7 },
   boolean: { make: () => z.boolean(), fallback: true },
   refinedBoolean: { make: () => z.boolean().refine((value) => value), fallback: true },
   bigint: { make: () => z.bigint(), fallback: BigInt(7) },
   date: { make: () => z.date(), fallback: new Date(0) },
-};
+  dateWithCustomError: {
+    make: () =>
+      z.date({ error: (issue) => (issue.input === undefined ? undefined : 'error_blankField') }),
+    fallback: new Date(0),
+  },
+} satisfies Record<string, { make: () => z.ZodType; fallback: unknown }>;
+
+type LeafName = keyof typeof leaves;
 
 const wrappers: Record<string, (leaf: z.ZodType, fallback: any) => z.ZodType> = {
   plain: (leaf) => leaf,
@@ -41,6 +48,13 @@ const wrappers: Record<string, (leaf: z.ZodType, fallback: any) => z.ZodType> = 
   nestedArray: (leaf) => z.array(z.array(leaf)),
   object: (leaf) => z.object({ inner: leaf }),
   optionalObject: (leaf) => z.object({ inner: leaf }).optional(),
+  // The empty prefault is what clients rely on: the inner field's own conversion fills it.
+  prefaultObject: (leaf) => z.object({ inner: leaf }).prefault({} as { inner: unknown }),
+  prefaultObjectOptional: (leaf) =>
+    z
+      .object({ inner: leaf })
+      .prefault({} as { inner: unknown })
+      .optional(),
   arrayOfObjects: (leaf) => z.array(z.object({ inner: leaf })),
   strictObject: (leaf) => z.strictObject({ inner: leaf.optional() }),
   lazy: (leaf) => z.lazy(() => leaf),
@@ -88,7 +102,7 @@ const ABSENT = Symbol('absent');
 
 type Outcome =
   | { success: true; data: unknown }
-  | { success: false; issues: { code: string; path: PropertyKey[] }[] };
+  | { success: false; issues: { code: string; path: PropertyKey[]; message: string }[] };
 
 const outcomeOf = (schema: z.ZodType, input: unknown): Outcome => {
   const result = schema.safeParse(input);
@@ -96,23 +110,23 @@ const outcomeOf = (schema: z.ZodType, input: unknown): Outcome => {
     ? { success: true, data: result.data }
     : {
         success: false,
-        // Messages differ for one case: a missing number or date reads "received undefined"
-        // instead of "received NaN" / "Invalid Date". Both fail with the same code and path.
-        issues: result.error.issues.map(({ code, path }) => ({ code, path })),
+        issues: result.error.issues.map(({ code, path, message }) => ({ code, path, message })),
       };
 };
 
 const exactOptionalWrappers = Object.entries(wrappers).filter(([name]) =>
   /exactOptional/i.test(name),
 );
-const isExactOptional = (wrapperName: string) =>
+// Without a value, z.coerce on zod 4.3 lets an optional keep a prefault that failed validation.
+const missingValueChecksSeparately = (wrapperName: string) =>
+  wrapperName === 'prefaultObjectOptional' ||
   exactOptionalWrappers.some(([name]) => name === wrapperName);
 
 describe('coerceInput', () => {
   const cases = Object.entries(leaves).flatMap(([leafName, leaf]) =>
     Object.entries(wrappers).flatMap(([wrapperName, wrap]) =>
       [ABSENT, ...inputs]
-        .filter((input) => input !== ABSENT || !isExactOptional(wrapperName))
+        .filter((input) => input !== ABSENT || !missingValueChecksSeparately(wrapperName))
         .map((input) => ({
           name: `${leafName} in ${wrapperName} with ${input === ABSENT ? 'no value' : JSON.stringify(input)}`,
           leaf,
@@ -162,24 +176,112 @@ describe('coerceInput', () => {
     },
   );
 
-  test('top-level pipe of one schema or a preprocess -> same result as z.coerce', () => {
+  const optionalPrefaultCase = (leafName: LeafName) => {
+    const prefaulted = () =>
+      z.object({ inner: leaves[leafName].make() as z.ZodType }).prefault({} as { inner: unknown });
+    const legacy = z.object({ field: prefaulted().optional() });
+    legacyCoerceSchema(legacy);
+    const schema = z.object({ field: prefaulted().optional() });
+    return { legacy, schema, input: coerceInput(schema, {}, () => 'body').input };
+  };
+
+  test.each<LeafName>(['boolean', 'bigint'])(
+    'missing key for an optional object whose %s prefault converts to a valid value or not at all -> same result as before',
+    (leafName) => {
+      const { legacy, schema, input } = optionalPrefaultCase(leafName);
+
+      expect(outcomeOf(schema, input)).toEqual(outcomeOf(legacy, {}));
+    },
+  );
+
+  // z.coerce kept the NaN or the refused false here on zod 4.3.
+  test.each<LeafName>(['number', 'int', 'refinedBoolean', 'date', 'dateWithCustomError'])(
+    'missing key for an optional object whose %s prefault converts to an invalid value -> key stays missing, zod decides as without conversion',
+    (leafName) => {
+      const { schema, input } = optionalPrefaultCase(leafName);
+
+      expect(input).toEqual({});
+      expect(outcomeOf(schema, input)).toEqual(outcomeOf(schema, {}));
+    },
+  );
+
+  test('top-level pipe of one object or of its refinement -> same result as z.coerce', () => {
     for (const build of [
       () => {
         const object = z.object({ count: z.number(), active: z.boolean() });
         return z.pipe(object, object);
       },
-      () => z.preprocess((value) => value, z.object({ count: z.number(), active: z.boolean() })),
+      () => {
+        const object = z.object({ count: z.number(), active: z.boolean() });
+        return z.pipe(
+          object.refine(() => true),
+          object,
+        );
+      },
     ]) {
       for (const body of [{ count: '5', active: 'false' }, { count: null }, {}]) {
         const legacy = build();
         legacyCoerceSchema(unwrapZodType(legacy, true) as z.ZodObject<z.ZodRawShape>);
         const schema = build();
-        const objectSchema = unwrapZodType(schema, true) as z.ZodObject<z.ZodRawShape>;
-        expect(outcomeOf(schema, coerceInput(objectSchema, body, () => 'body').input)).toEqual(
+        expect(outcomeOf(schema, coerceInput(schema, body, () => 'body').input)).toEqual(
           outcomeOf(legacy, body),
         );
       }
     }
+  });
+
+  test('missing required number and date with a custom error -> same messages as z.coerce', () => {
+    const build = () =>
+      z.object({
+        count: z.number(),
+        birthDate: z.date({
+          error: (issue) => (issue.input === undefined ? undefined : 'error_blankField'),
+        }),
+      });
+    const legacy = build();
+    legacyCoerceSchema(legacy);
+    const schema = build();
+
+    const outcome = outcomeOf(schema, coerceInput(schema, {}, () => 'body').input);
+
+    expect(outcome).toEqual(outcomeOf(legacy, {}));
+    expect(outcome).toMatchObject({
+      issues: [
+        { path: ['count'], message: 'Invalid input: expected number, received NaN' },
+        { path: ['birthDate'], message: 'error_blankField' },
+      ],
+    });
+  });
+
+  test('top-level preprocess -> sent values converted, missing keys stay missing for it to fill', () => {
+    const schema = z.preprocess(
+      (value) => value,
+      z.object({ count: z.number(), active: z.boolean(), page: z.number() }),
+    );
+
+    const { input, coercions } = coerceInput(schema, { page: '2' }, () => 'body');
+
+    expect(input).toEqual({ page: 2 });
+    expect(coercions).toEqual([{ path: ['page'], source: 'body', from: 'string', to: 'number' }]);
+  });
+
+  test('missing key for an optional field whose converted prefault fails validation -> nothing reported', () => {
+    const schema = z.object({
+      count: z
+        .number()
+        .min(5)
+        .prefault('3' as unknown as number)
+        .optional(),
+      settings: z
+        .object({ active: z.boolean(), kind: z.enum(['a']) })
+        .prefault({} as { active: boolean; kind: 'a' })
+        .optional(),
+    });
+
+    const { input, coercions } = coerceInput(schema, {}, () => 'body');
+
+    expect(input).toEqual({});
+    expect(coercions).toEqual([]);
   });
 
   test('numeric strings at two depths -> converted copy, schema and sent input unchanged', () => {

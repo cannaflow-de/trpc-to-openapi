@@ -1,12 +1,18 @@
 ## Changelog
 
-- v3.3.0
+- v4.0.0
 
   - fix: convert input values instead of setting `_def.coerce` on the input schema. The old way changed shared schemas for every procedure and transport for the rest of the process, so tRPC callers also accepted `"5"` for a number and `null` for `0`
   - feat: `coerceBody: false` keeps JSON body values as sent; path and query values are still converted
-  - feat: `onCoerce` reports each converted value with its location, source and types
+  - feat: `onCoerce` reports each converted value with its location, source and types. The handler awaits it, so its errors reach `onError`
+  - fix: a body key named like an `Object.prototype` member (`toString`, `constructor`) on a route without path parameters is read from the body
   - breaking: `coerceSchema` is removed; use `coerceInput`
-  - A missing `z.exactOptional()` key now stays missing instead of becoming `NaN`, `Invalid Date` or `false`
+  - Values are converted where `z.coerce` converted them, with the same results and error messages, except:
+    - A missing `z.exactOptional()` key, or a missing key of an optional object whose converted prefault fails validation, stays missing, so zod handles it as if nothing was converted. Before, it could get a `NaN`, an `Invalid Date` or a `false` that skipped its refinement
+    - An input that starts with a pipe, preprocess or transform is converted before that stage runs, and missing keys stay missing. Keys it renames or fills are not converted, so declare those fields with `z.coerce`. Outside production the handler warns about such inputs. A pipe of one object, or of an object and its refinement, converts as before
+    - A schema instance that is also used inside a union, record, tuple, intersection, catchall, `.catch()`, `.readonly()` or field pipe is no longer converted there. Before, that depended on whether another request had already changed the shared schema
+    - With several `.input()` calls, values are converted against the merged shape
+    - Middlewares that call `getRawInput()` see the converted values
 
 - v3.2.4
 

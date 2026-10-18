@@ -46,7 +46,9 @@ export const createProcedureCache = (router: OpenApiRouter) => {
     }
 
     const procedure = procedureMethodCache.get(procedureRegExp);
-    const pathInput = procedureRegExp.exec(path)?.groups ?? {};
+    // Without a prototype, a body key such as `toString` is not mistaken for a path parameter.
+    const pathInput =
+      procedureRegExp.exec(path)?.groups ?? (Object.create(null) as Record<string, string>);
 
     return { procedure, pathInput };
   };

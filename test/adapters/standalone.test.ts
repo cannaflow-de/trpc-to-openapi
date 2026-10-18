@@ -1564,6 +1564,185 @@ describe('standalone adapter', () => {
     expect(onErrorMock.mock.calls[0][0].input).toEqual({ count: '9' });
   });
 
+  test('async onCoerce rejects -> onError gets the error and the client gets 500', async () => {
+    const failure = new Error('coercion log unavailable');
+    const appRouter = t.router({
+      addOne: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/add-one' } })
+        .input(z.object({ count: z.number() }))
+        .output(z.object({ result: z.number() }))
+        .mutation(({ input }) => ({ result: input.count + 1 })),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+      onCoerce: () => Promise.reject(failure),
+    });
+
+    const res = await fetch(`${url}/add-one`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: '9' }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(onErrorMock).toHaveBeenCalledTimes(1);
+    expect(onErrorMock.mock.calls[0][0].error.cause).toBe(failure);
+  });
+
+  test('onCoerce throws -> onError gets the error and the client gets 500', async () => {
+    const failure = new Error('coercion log unavailable');
+    const appRouter = t.router({
+      addOne: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/add-one' } })
+        .input(z.object({ count: z.number() }))
+        .output(z.object({ result: z.number() }))
+        .mutation(({ input }) => ({ result: input.count + 1 })),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+      onCoerce: () => {
+        throw failure;
+      },
+    });
+
+    const res = await fetch(`${url}/add-one`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: '9' }),
+    });
+
+    expect(res.status).toBe(500);
+    expect(onErrorMock).toHaveBeenCalledTimes(1);
+    expect(onErrorMock.mock.calls[0][0].error.cause).toBe(failure);
+  });
+
+  test('body key named like an Object prototype member on a route without path parameters -> read from the body', async () => {
+    const appRouter = t.router({
+      echo: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/echo' } })
+        .input(z.object({ toString: z.string() }))
+        .output(z.object({ result: z.string() }))
+        .mutation(({ input }) => ({ result: input.toString })),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+    });
+
+    const res = await fetch(`${url}/echo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ toString: 'Lily' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ result: 'Lily' });
+  });
+
+  test('coerceBody false and a body key named constructor -> not converted like a path value', async () => {
+    const appRouter = t.router({
+      addOne: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/add-one' } })
+        .input(z.object({ constructor: z.number(), name: z.string() }))
+        .output(z.object({ result: z.number() }))
+        .mutation(({ input }) => ({ result: input.constructor + 1 })),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+      coerceBody: false,
+    });
+
+    const res = await fetch(`${url}/add-one`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ constructor: '9', name: 'Lily' }),
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  test('top-level preprocess with z.coerce fields -> renamed and default-filled values converted after it runs', async () => {
+    const appRouter = t.router({
+      listItems: t.procedure
+        .meta({ openapi: { method: 'GET', path: '/items' } })
+        .input(
+          z.preprocess(
+            (value) => {
+              const query = (value ?? {}) as Record<string, unknown>;
+              return { pageSize: query.page_size ?? query.pageSize ?? '20' };
+            },
+            z.object({ pageSize: z.coerce.number() }),
+          ),
+        )
+        .output(z.object({ pageSize: z.number() }))
+        .query(({ input }) => input),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+    });
+
+    for (const [query, pageSize] of [
+      ['?page_size=10', 10],
+      ['?pageSize=5', 5],
+      ['', 20],
+    ] as const) {
+      const res = await fetch(`${url}/items${query}`, { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pageSize });
+    }
+  });
+
+  test('top-level preprocess whose output has a number without z.coerce -> one warning naming the procedure', () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const object = z.object({ count: z.number(), active: z.boolean() });
+    const appRouter = t.router({
+      renamed: t.procedure
+        .meta({ openapi: { method: 'GET', path: '/renamed' } })
+        .input(z.preprocess((value) => value, z.object({ pageSize: z.number() })))
+        .output(z.object({}))
+        .query(() => ({})),
+      sameObject: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/same-object' } })
+        .input(z.pipe(object, object))
+        .output(z.object({}))
+        .mutation(() => ({})),
+      refined: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/refined' } })
+        .input(
+          z.pipe(
+            object.refine(() => true),
+            object,
+          ),
+        )
+        .output(z.object({}))
+        .mutation(() => ({})),
+      coerced: t.procedure
+        .meta({ openapi: { method: 'GET', path: '/coerced' } })
+        .input(z.preprocess((value) => value, z.object({ pageSize: z.coerce.number() })))
+        .output(z.object({}))
+        .query(() => ({})),
+      strings: t.procedure
+        .meta({ openapi: { method: 'GET', path: '/strings' } })
+        .input(z.preprocess((value) => value, z.object({ name: z.string() })))
+        .output(z.object({}))
+        .query(() => ({})),
+    });
+
+    try {
+      createOpenApiHttpHandler({ router: appRouter });
+
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('"renamed"'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   test('with x-www-form-urlencoded', async () => {
     const appRouter = t.router({
       echo: t.procedure
