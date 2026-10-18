@@ -20,7 +20,8 @@ import {
   acceptsRequestBody,
   normalizePath,
   getInputOutputParsers,
-  coerceSchema,
+  coerceInput,
+  OpenApiCoercion,
   instanceofZodTypeLikeVoid,
   instanceofZodTypeObject,
   instanceofZodTypeOptional,
@@ -40,7 +41,18 @@ export type CreateOpenApiNodeHttpHandlerOptions<
 > = Pick<
   NodeHTTPHandlerOptions<TRouter, TRequest, TResponse>,
   'router' | 'createContext' | 'responseMeta' | 'onError' | 'maxBodySize'
->;
+> &
+  OpenApiCoercionOptions<TRequest>;
+
+export interface OpenApiCoercionOptions<TRequest> {
+  /**
+   * Convert JSON body values to the number, boolean, bigint and date types of the input schema.
+   * Defaults to true. Path and query values are strings, so they are always converted.
+   */
+  coerceBody?: boolean;
+  /** Called before the procedure runs when the adapter converted at least one input value. */
+  onCoerce?: (opts: { path: string; coercions: OpenApiCoercion[]; req: TRequest }) => void;
+}
 
 export type OpenApiNextFunction = () => void;
 
@@ -58,7 +70,7 @@ export const createOpenApiNodeHttpHandler = <
     generateOpenApiDocument(router, { title: '', version: '', baseUrl: '' });
   }
 
-  const { createContext, responseMeta, onError, maxBodySize } = opts;
+  const { createContext, responseMeta, onError, maxBodySize, coerceBody = true, onCoerce } = opts;
   const getProcedure = createProcedureCache(router);
 
   return async (req: TRequest, res: TResponse, next?: OpenApiNextFunction) => {
@@ -139,6 +151,7 @@ export const createOpenApiNodeHttpHandler = <
         }
       }
 
+      let procedureInput = input;
       // if supported, coerce all string values to correct types
       if (zodSupportsCoerce && instanceofZodTypeObject(unwrappedSchema)) {
         if (!useBody) {
@@ -162,7 +175,17 @@ export const createOpenApiNodeHttpHandler = <
             }
           }
         }
-        coerceSchema(unwrappedSchema);
+        // A top-level pipe is read through its output schema, but its values are converted
+        // before the pipe's input schema runs.
+        const coerced = coerceInput(unwrappedSchema, input, (key) => {
+          if (pathInput && key in pathInput) return 'path';
+          if (!useBody) return 'query';
+          return coerceBody ? 'body' : null;
+        });
+        procedureInput = coerced.input;
+        if (coerced.coercions.length > 0) {
+          onCoerce?.({ path: procedure.path, coercions: coerced.coercions, req });
+        }
       }
 
       info = {
@@ -184,7 +207,7 @@ export const createOpenApiNodeHttpHandler = <
         caller as any,
       ) as OpenApiProcedure;
 
-      data = await procedureFn(input);
+      data = await procedureFn(procedureInput);
 
       const meta = responseMeta?.({
         type: procedure.type,

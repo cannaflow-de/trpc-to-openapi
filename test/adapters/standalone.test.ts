@@ -39,6 +39,8 @@ const createHttpServerWithRouter = <TRouter extends OpenApiRouter>(
     responseMeta: handlerOpts.responseMeta ?? responseMetaMock,
     onError: handlerOpts.onError ?? onErrorMock,
     maxBodySize: handlerOpts.maxBodySize,
+    coerceBody: handlerOpts.coerceBody,
+    onCoerce: handlerOpts.onCoerce,
   } as any);
   const httpHandler = createHTTPHandler<TRouter>({
     router: handlerOpts.router,
@@ -1371,6 +1373,195 @@ describe('standalone adapter', () => {
       expect(responseMetaMock).toHaveBeenCalledTimes(1);
       expect(onErrorMock).toHaveBeenCalledTimes(0);
     }
+  });
+
+  test('numeric string converted for an OpenAPI call -> tRPC callers of the same schema still get BAD_REQUEST', async () => {
+    const count = z.number();
+    const appRouter = t.router({
+      addOne: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/add-one' } })
+        .input(z.object({ count }))
+        .output(z.object({ result: z.number() }))
+        .mutation(({ input }) => ({ result: input.count + 1 })),
+      addTwo: t.procedure
+        .input(z.object({ count }))
+        .output(z.object({ result: z.number() }))
+        .mutation(({ input }) => ({ result: input.count + 2 })),
+    });
+    type AppRouter = typeof appRouter;
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+    });
+    const client = createTRPCClient<AppRouter>({
+      links: [httpBatchLink({ url: `${url}/trpc` })],
+    });
+
+    const res = await fetch(`${url}/add-one`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: '9' }),
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ result: 10 });
+    await expect(client.addOne.mutate({ count: '9' as unknown as number })).rejects.toMatchObject({
+      data: { code: 'BAD_REQUEST' },
+    });
+    await expect(client.addTwo.mutate({ count: '9' as unknown as number })).rejects.toMatchObject({
+      data: { code: 'BAD_REQUEST' },
+    });
+  });
+
+  test('coerceBody false -> body strings rejected, path strings still converted', async () => {
+    const appRouter = t.router({
+      addOne: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/add-one' } })
+        .input(z.object({ count: z.number() }))
+        .output(z.object({ result: z.number() }))
+        .mutation(({ input }) => ({ result: input.count + 1 })),
+      addToPath: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/add/{count}' } })
+        .input(z.object({ count: z.number(), amount: z.number() }))
+        .output(z.object({ result: z.number() }))
+        .mutation(({ input }) => ({ result: input.count + input.amount })),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+      coerceBody: false,
+    });
+    const post = (path: string, body: unknown) =>
+      fetch(`${url}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+
+    {
+      const res = await post('/add-one', { count: '9' });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual(
+        expect.objectContaining({ code: 'BAD_REQUEST', message: 'Input validation failed' }),
+      );
+    }
+    {
+      const res = await post('/add/9', { amount: 1 });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ result: 10 });
+    }
+    {
+      const res = await post('/add/9', { amount: '1' });
+
+      expect(res.status).toBe(400);
+    }
+  });
+
+  test('onCoerce set -> called once per request with each converted value, not called when nothing is converted', async () => {
+    const onCoerce = jest.fn();
+    const appRouter = t.router({
+      getPlusOne: t.procedure
+        .meta({ openapi: { method: 'GET', path: '/plus-one' } })
+        .input(z.object({ number: z.number() }))
+        .output(z.object({ result: z.number() }))
+        .query(({ input }) => ({ result: input.number + 1 })),
+      addItems: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/add/{count}' } })
+        .input(
+          z.object({
+            count: z.number(),
+            items: z.array(z.object({ vat: z.number() })),
+            active: z.boolean(),
+          }),
+        )
+        .output(z.object({ result: z.number(), active: z.boolean() }))
+        .mutation(({ input }) => ({
+          result: input.count + input.items.length,
+          active: input.active,
+        })),
+      echo: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/echo' } })
+        .input(z.object({ name: z.string(), count: z.number() }))
+        .output(z.object({ name: z.string() }))
+        .mutation(({ input }) => ({ name: input.name })),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+      onCoerce,
+    });
+
+    {
+      const res = await fetch(`${url}/plus-one?number=9`, { method: 'GET' });
+
+      expect(res.status).toBe(200);
+      expect(onCoerce).toHaveBeenCalledTimes(1);
+      expect(onCoerce).toHaveBeenCalledWith({
+        path: 'getPlusOne',
+        coercions: [{ path: ['number'], source: 'query', from: 'string', to: 'number' }],
+        req: expect.anything(),
+      });
+      onCoerce.mockClear();
+    }
+    {
+      const res = await fetch(`${url}/add/9`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ items: [{ vat: 19 }, { vat: null }] }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ result: 11, active: false });
+      expect(onCoerce).toHaveBeenCalledTimes(1);
+      expect(onCoerce).toHaveBeenCalledWith({
+        path: 'addItems',
+        coercions: [
+          { path: ['count'], source: 'path', from: 'string', to: 'number' },
+          { path: ['items', 1, 'vat'], source: 'body', from: 'null', to: 'number' },
+          { path: ['active'], source: 'body', from: 'undefined', to: 'boolean' },
+        ],
+        req: expect.anything(),
+      });
+      onCoerce.mockClear();
+    }
+    {
+      const res = await fetch(`${url}/echo`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'Lily', count: 1 }),
+      });
+
+      expect(res.status).toBe(200);
+      expect(onCoerce).not.toHaveBeenCalled();
+    }
+  });
+
+  test('procedure fails after a body value was converted -> onError gets the input as sent', async () => {
+    const appRouter = t.router({
+      addOne: t.procedure
+        .meta({ openapi: { method: 'POST', path: '/add-one' } })
+        .input(z.object({ count: z.number() }))
+        .output(z.object({ result: z.number() }))
+        .mutation(() => {
+          throw new TRPCError({ code: 'CONFLICT' });
+        }),
+    });
+
+    const { url } = createHttpServerWithRouter({
+      router: appRouter,
+    });
+
+    const res = await fetch(`${url}/add-one`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ count: '9' }),
+    });
+
+    expect(res.status).toBe(409);
+    expect(onErrorMock).toHaveBeenCalledTimes(1);
+    expect(onErrorMock.mock.calls[0][0].input).toEqual({ count: '9' });
   });
 
   test('with x-www-form-urlencoded', async () => {

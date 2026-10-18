@@ -1,5 +1,13 @@
 ## Changelog
 
+- v3.3.0
+
+  - fix: convert input values instead of setting `_def.coerce` on the input schema. The old way changed shared schemas for every procedure and transport for the rest of the process, so tRPC callers also accepted `"5"` for a number and `null` for `0`
+  - feat: `coerceBody: false` keeps JSON body values as sent; path and query values are still converted
+  - feat: `onCoerce` reports each converted value with its location, source and types
+  - breaking: `coerceSchema` is removed; use `coerceInput`
+  - A missing `z.exactOptional()` key now stays missing instead of becoming `NaN`, `Invalid Date` or `false`
+
 - v3.2.4
 
   - fix: skip content-type validation for mutations whose input is fully covered by path parameters
